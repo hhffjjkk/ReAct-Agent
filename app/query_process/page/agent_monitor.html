@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ReAct 诊断 Agent 监控</title>
+  <style>
+    :root{
+      --bg:#f5f7fb; --card:#fff; --text:#1f2d3d; --muted:#7a869a;
+      --ok:#17b26a; --bad:#f04438; --run:#2e90fa; --border:#e6eaf0; --warn:#f79009;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text)}
+    .wrap{max-width:1240px;margin:24px auto;padding:0 16px}
+    .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
+    .title{font-size:20px;font-weight:700}
+    .links{display:flex;gap:8px;align-items:center}
+    .links a{color:var(--run);text-decoration:none;font-size:13px}
+    button{height:36px;border:1px solid var(--border);border-radius:8px;padding:0 12px;background:#fff;cursor:pointer}
+    .cards{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:10px;margin-bottom:12px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px}
+    .k{font-size:12px;color:var(--muted)}
+    .v{font-size:20px;font-weight:700;margin-top:4px}
+    .panel{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px}
+    .panel h3{margin:0 0 10px;font-size:15px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:9px;border-bottom:1px solid var(--border);font-size:13px;text-align:left;vertical-align:top}
+    th{background:#fafbfe;color:#445}
+    .bar-row{display:grid;grid-template-columns:110px 1fr 50px;gap:10px;align-items:center;margin:6px 0;font-size:13px}
+    .bar-bg{background:#eef2f7;border-radius:6px;height:14px;overflow:hidden}
+    .bar{height:14px;background:var(--run);border-radius:6px}
+    .bar.warn{background:var(--warn)}
+    .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;color:#fff}
+    .tag.react{background:var(--run)} .tag.single{background:var(--ok)}
+    .tag.warn{background:var(--warn)} .tag.bad{background:var(--bad)}
+    .muted{color:var(--muted)}
+    .q{max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .detail{margin-top:10px;border-top:1px solid var(--border);padding-top:10px;display:none}
+    .step{border-left:3px solid var(--run);padding:6px 10px;margin:8px 0;background:#f8fbff;border-radius:6px;font-size:13px;white-space:pre-wrap}
+    .mono{font-family:Consolas,monospace}
+    @media (max-width:900px){ .cards{grid-template-columns:repeat(2,1fr)} .grid2{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">ReAct 诊断 Agent 监控</div>
+      <div class="links">
+        <a href="/chat.html" target="_blank">问答页</a>
+        <a href="/monitor.html" target="_blank">检索质量监控</a>
+        <button id="btnRefresh">刷新</button>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div class="k">总会话</div><div class="v" id="mTotal">0</div></div>
+      <div class="card"><div class="k">ReAct 请求</div><div class="v" id="mReact">0</div></div>
+      <div class="card"><div class="k">单轮 RAG（分流）</div><div class="v" id="mSingle">0</div></div>
+      <div class="card"><div class="k">转人工率</div><div class="v" id="mTransfer">0%</div></div>
+      <div class="card"><div class="k">最大步数触发</div><div class="v" id="mMaxSteps">0</div></div>
+      <div class="card"><div class="k">ReAct 平均延迟</div><div class="v" id="mLatency">0ms</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>ReAct 步数分布（1~6 步 + max_steps_reached）</h3>
+      <div id="stepDist"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h3>工具调用次数与 hit=false 次数</h3>
+        <table>
+          <thead><tr><th>工具</th><th>调用次数</th><th>hit=false</th></tr></thead>
+          <tbody id="toolBody"></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>两条链路请求量与平均延迟对比</h3>
+        <table>
+          <thead><tr><th>链路</th><th>请求量</th><th>平均延迟</th></tr></thead>
+          <tbody id="routeBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>最近会话</h3>
+      <table>
+        <thead>
+          <tr><th>链路</th><th>Session</th><th>问题</th><th>步数</th><th>转人工</th><th>延迟(ms)</th><th>时间</th><th>操作</th></tr>
+        </thead>
+        <tbody id="recentBody"></tbody>
+      </table>
+      <div class="detail" id="detail"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8001' : location.origin;
+
+    function esc(s){
+      return String(s == null ? '' : s)
+        .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+        .replaceAll('"','&quot;').replaceAll("'",'&#39;');
+    }
+    function fmtTime(ts){
+      if(!ts) return '-';
+      const d = new Date(ts * 1000);
+      const p = n => String(n).padStart(2,'0');
+      return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+    function routeTag(route){
+      if(route === 'react') return '<span class="tag react">ReAct</span>';
+      if(route === 'single_rag') return '<span class="tag single">单轮 RAG</span>';
+      return '<span class="tag bad">异常</span>';
+    }
+
+    async function load(){
+      try{
+        const res = await fetch(`${API_BASE}/agent/metrics?days=14`);
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        render(data);
+      }catch(e){
+        document.getElementById('stepDist').innerHTML = `<div class="muted">加载失败：${esc(e.message)}</div>`;
+      }
+    }
+
+    function render(data){
+      const s = data.summary || {};
+      document.getElementById('mTotal').textContent = s.total || 0;
+      document.getElementById('mReact').textContent = s.react_count || 0;
+      document.getElementById('mSingle').textContent = s.single_rag_count || 0;
+      document.getElementById('mTransfer').textContent = ((s.transfer_rate || 0) * 100).toFixed(1) + '%';
+      document.getElementById('mMaxSteps').textContent = s.max_steps_count || 0;
+      document.getElementById('mLatency').textContent = (s.avg_latency_react_ms || 0) + 'ms';
+
+      // 步数分布
+      const dist = data.step_distribution || [];
+      const maxCount = Math.max(1, ...dist.map(x => x.count || 0));
+      document.getElementById('stepDist').innerHTML = dist.map(item => {
+        const isMax = item.bucket === 'max_steps_reached';
+        const pct = Math.round((item.count || 0) / maxCount * 100);
+        return `<div class="bar-row">
+          <div>${isMax ? 'max_steps_reached' : item.bucket + ' 步'}</div>
+          <div class="bar-bg"><div class="bar ${isMax ? 'warn' : ''}" style="width:${pct}%"></div></div>
+          <div>${item.count || 0}</div>
+        </div>`;
+      }).join('') || '<div class="muted">暂无数据</div>';
+
+      // 工具统计
+      const tools = data.tool_stats || [];
+      document.getElementById('toolBody').innerHTML = tools.length ? tools.map(t => `
+        <tr><td class="mono">${esc(t.name)}</td><td>${t.calls || 0}</td><td>${t.hit_false || 0}</td></tr>
+      `).join('') : '<tr><td colspan="3" class="muted">暂无工具调用</td></tr>';
+
+      // 链路对比
+      const routes = data.route_comparison || [];
+      document.getElementById('routeBody').innerHTML = routes.map(r => `
+        <tr><td>${esc(r.route)}</td><td>${r.count || 0}</td><td>${r.avg_latency_ms || 0}</td></tr>
+      `).join('');
+
+      // 最近会话
+      const recent = data.recent || [];
+      document.getElementById('recentBody').innerHTML = recent.length ? recent.map(t => `
+        <tr>
+          <td>${routeTag(t.route)}</td>
+          <td class="mono">${esc((t.session_id || '').slice(0, 18))}</td>
+          <td class="q" title="${esc(t.query)}">${esc(t.query)}</td>
+          <td>${t.step_count || 0}</td>
+          <td>${t.transfer_to_human ? '<span class="tag warn">是</span>' : '否'}</td>
+          <td>${t.latency_ms || 0}</td>
+          <td>${fmtTime(t.created_at)}</td>
+          <td><button onclick="showDetail('${esc(t.session_id)}')">轨迹</button></td>
+        </tr>
+      `).join('') : '<tr><td colspan="8" class="muted">暂无会话</td></tr>';
+    }
+
+    async function showDetail(sessionId){
+      const box = document.getElementById('detail');
+      box.style.display = 'block';
+      box.innerHTML = '<div class="muted">加载轨迹中...</div>';
+      try{
+        const res = await fetch(`${API_BASE}/agent/history/${encodeURIComponent(sessionId)}`);
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        const t = await res.json();
+        const steps = (t.steps || []).map(st => `
+          <div class="step"><b>Step ${st.step}</b>
+Thought: ${esc(st.thought)}
+Action: ${esc(st.action)}
+Action Input: ${esc(JSON.stringify(st.action_input || {}))}
+Observation: ${esc(JSON.stringify(st.observation || {}))}</div>
+        `).join('') || '<div class="muted">该会话没有工具调用（单轮 RAG 分流）</div>';
+        box.innerHTML = `
+          <div><b>Session：</b><span class="mono">${esc(t.session_id)}</span>
+            &nbsp; <b>Route：</b>${routeTag(t.route)}
+            &nbsp; <b>步数：</b>${t.step_count || 0}
+            &nbsp; <b>转人工：</b>${t.transfer_to_human ? '是' : '否'}
+            &nbsp; <b>延迟：</b>${t.latency_ms || 0}ms</div>
+          <div style="margin:8px 0;"><b>结论：</b>${esc(t.final_answer)}</div>
+          ${steps}`;
+      }catch(e){
+        box.innerHTML = `<div class="muted">加载失败：${esc(e.message)}</div>`;
+      }
+    }
+
+    document.getElementById('btnRefresh').addEventListener('click', load);
+    load();
+    setInterval(load, 30000);
+  </script>
+</body>
+</html>

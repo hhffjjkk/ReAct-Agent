@@ -17,6 +17,7 @@ docs/
 
 # Runtime data and logs
 logs/
+.run/
 output/
 volumes/
 

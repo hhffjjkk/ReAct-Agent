@@ -1,0 +1,45 @@
+{
+  "_comment": "模拟数据，生产环境需替换为真实 CMDB / 设备监控接口。字段含义：online=是否在线，queue_length=打印队列长度，error_code=设备错误码，last_seen=最近心跳时间。",
+  "devices": [
+    {
+      "device_id": "PRN-001",
+      "printer_name": "3F-财务-HP-M403",
+      "online": true,
+      "queue_length": 0,
+      "error_code": null,
+      "last_seen": "2026-10-23T16:40:00+08:00"
+    },
+    {
+      "device_id": "PRN-002",
+      "printer_name": "3F-财务-奔图-P3302",
+      "online": false,
+      "queue_length": 3,
+      "error_code": "E3",
+      "last_seen": "2026-10-23T15:05:00+08:00"
+    },
+    {
+      "device_id": "PRN-003",
+      "printer_name": "5F-研发-佳能-iR2625",
+      "online": true,
+      "queue_length": 12,
+      "error_code": null,
+      "last_seen": "2026-10-23T16:39:30+08:00"
+    },
+    {
+      "device_id": "PRN-004",
+      "printer_name": "5F-研发-惠普-M405",
+      "online": true,
+      "queue_length": 1,
+      "error_code": "E1",
+      "last_seen": "2026-10-23T16:38:00+08:00"
+    },
+    {
+      "device_id": "PRN-005",
+      "printer_name": "1F-前台-爱普生-L3250",
+      "online": true,
+      "queue_length": 0,
+      "error_code": null,
+      "last_seen": "2026-10-23T16:41:00+08:00"
+    }
+  ]
+}

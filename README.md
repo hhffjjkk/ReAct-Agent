@@ -37,6 +37,78 @@
 
 ---
 
+## 🤖 ReAct 诊断 Agent（企业 IT 运维 · 打印报障）
+
+在保留原有单轮 RAG 链路的前提下，新增一条基于 **ReAct 多工具诊断**的 Agent 链路，用于「员工无法打印」的 IT 报障排查。所有新能力通过 `/agent/*` 挂在查询服务（:8001）上，受开关 `AGENT_ENABLED`（默认 `true`）控制，**关闭时新接口返回 404，不影响原链路**。
+
+### 场景定位
+
+输入走 `intent_router` 意图分流：
+- **事实型问题**（如「打印机驱动怎么安装」）→ `single_rag`，原样复用原单轮 RAG 图；
+- **诊断型问题**（如「我打印不了，提示错误码 E3」）→ `react`，进入 ReAct 多工具诊断。
+
+### 四个工具（固定数量，不增删）
+
+| 工具 | 何时使用（description） | 说明 |
+|------|------------------------|------|
+| `search_knowledge_base` | 需要从企业知识库/手册检索权威资料时 | 复用 Milvus 混合检索 + BGE-M3 + Reranker，**继承现有版本/时效过滤**，返回 TopK 切片与 `hit` |
+| `query_ticket_history` | 希望参考同类历史工单处理方案时 | 在 MongoDB 中按关键词相似度检索历史工单（不引入向量化），返回 `{tickets, hit}` |
+| `check_device_status` | 报告打印机无响应/任务卡住/错误码时 | 确认设备在线状态与队列长度（**Mock 数据**） |
+| `check_user_permission` | 怀疑无权限或驱动版本不匹配时 | 返回是否授权与驱动版本期望值（**Mock 数据**） |
+
+> ⚠️ **Mock 数据边界声明**：`check_device_status`、`check_user_permission`、`query_ticket_history` 使用的设备、权限、工单数据均为代码内置的**模拟数据**（见 `app/react_agent/mock_data/*.json` 与 `tools.py` 注释），仅用于演示不同分支，**生产环境需替换为真实 CMDB / ITSM / IAM 接口**，本系统不伪装成真实系统。
+
+### 意图分流的设计动机（成本权衡）
+
+事实型问题用一次轻量 RAG 检索即可回答，若统一走 ReAct 会启动多步 LLM 工具循环，**成本与延迟明显更高**。因此通过 `intent_router`（规则优先 + 轻量 LLM 兜底）把多数事实问题分流到廉价的单轮路径，只有真正需要实时状态/历史经验的诊断问题才进入多步 ReAct，兼顾效果与成本。
+
+### 实现要点
+
+- **ReAct 循环用 LangGraph conditional edge 表达**（`react_plan → execute_tool → observe → react_plan`），节点内部无 while 循环。
+- **终止双重实现**：① LLM 输出 `Final Answer` 即终止；② 最大步数硬上限（默认 6），超过后强制生成「建议转人工工单」结论，并在轨迹中标记 `max_steps_reached=true`。
+- Thought / Action / Observation 分阶段通过 SSE 推送，完整轨迹落 `agent_traces` 集合（复用现有 Mongo）。
+- 工具返回 `hit=false` 时模型不得编造信息（Prompt 明确要求换工具或转人工）。
+
+### 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/agent/query` | 发起诊断，返回 session_id |
+| GET | `/agent/stream/{session_id}` | SSE 推送 Thought / Action / Observation / Final Answer |
+| GET | `/agent/history/{session_id}` | 读取完整 ReAct 轨迹 |
+| GET | `/agent/metrics` | ReAct 监控聚合指标 |
+| GET | `/agent/monitor.html` | ReAct 诊断监控页 |
+
+监控页展示 ReAct 步数分布（1~6 步 + max_steps_reached）、四个工具调用次数与 `hit=false` 次数、转人工率，以及两条链路（单轮 RAG / ReAct）的请求量与平均延迟对比。
+
+### 启动与演示
+
+服务启动方式与原来完全一致：
+
+```bash
+# 一键启动（Docker 基础设施 + 导入服务 + 查询服务，使用本地镜像）
+powershell -ExecutionPolicy Bypass -File .\start_all.ps1
+# 停止
+powershell -ExecutionPolicy Bypass -File .\stop_all.ps1          # 保留容器
+powershell -ExecutionPolicy Bypass -File .\stop_all.ps1 -Infra    # 同时停容器
+```
+
+演示建议：
+
+1. **走单轮 RAG**：`POST /agent/query {"query":"打印机驱动怎么安装"}` → 日志 `route=single_rag`，不进入多步工具循环（该分支复用原单轮 RAG 图；若原链路启用了联网搜索 MCP，实际耗时受外部搜索服务影响）。
+2. **走 ReAct 多步**：`POST /agent/query {"query":"我打印不了，提示错误码 E3"}` → 先 `check_device_status`，再 `query_ticket_history`，最终给出带工单号来源的排查结论，SSE 可见完整 Thought/Action/Observation。
+3. **触发转人工**：输入一个知识库与历史工单都无法覆盖、且缺乏标识信息的报障（如“随便哪个打印机的 XX 故障”，模型难以收敛时 6 步内自动转人工），`agent_traces` 中 `max_steps_reached=true`。
+
+> 说明：`search_knowledge_base` 检索的是现有知识库集合，若尚未导入打印相关文档，该工具会如实返回 `hit=false` 并提示不要编造，由模型改用历史工单或转人工——这符合约束「不得编造假信息」。
+
+### 已知限制
+
+- **工具接口为 Mock 数据**：真实环境需接入 CMDB/ITSM。
+- **工具数量固定 4 个**：为满足任务约束刻意收窄，便于演示分支；扩展需评估 Prompt 与终止条件。
+- `search_knowledge_base` 依赖知识库是否有打印类文档，演示前可在导入页先上传相关手册。
+
+---
+
 ## 🖼️ 界面预览
 
 ### 📄 文件导入页（`:8000/import`）
@@ -256,6 +328,9 @@ uv run python app/query_process/api/query_server.py
 | `TIMELINESS_MIN_FACTOR` | `0.6` | 降权因子下限 |
 | `MONITOR_ENABLED` | `true` | 启用检索质量监控 |
 | `MONITOR_WINDOW_DAYS` | `14` | 治理诊断统计窗口（天） |
+| `AGENT_ENABLED` | `true` | 启用 `/agent/*` ReAct 诊断链路（false 时统一 404） |
+| `AGENT_MAX_STEPS` | `6` | ReAct 最大工具调用步数（硬上限） |
+| `AGENT_TOPK` | `5` | `search_knowledge_base` 默认返回切片数 |
 
 ---
 

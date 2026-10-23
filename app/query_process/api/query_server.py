@@ -25,6 +25,8 @@ from app.clients.mongo_monitor_utils import (
 from app.utils.quality_metrics_utils import classify_diagnosis, build_recommendations
 from app.conf.monitor_config import monitor_config
 from app.query_process.agent.main_graph import query_app
+# ReAct 诊断 Agent 路由（挂载式新增，不改动原有接口与图拓扑）
+from app.react_agent.router import agent_router
 
 
 # 定义fastapi对象
@@ -37,6 +39,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载 ReAct 诊断 Agent 路由（/agent/*），AGENT_ENABLED=false 时统一 404
+app.include_router(agent_router)
 
 # 健康状态
 @app.get("/health")
