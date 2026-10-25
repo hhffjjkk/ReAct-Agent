@@ -49,6 +49,23 @@ def build_agent_metrics(days: int = 14, recent_limit: int = 50) -> Dict[str, Any
     transfer_count = sum(1 for t in react_traces if t.get("transfer_to_human"))
     transfer_rate = round(transfer_count / len(react_traces), 4) if react_traces else 0.0
 
+    # ---- 经验记忆 / 技能注入可观测 ----
+    experience_hit_count = sum(1 for t in react_traces if t.get("experience_hit"))
+    experience_injected_count = sum(int(t.get("experience_injected") or 0) for t in react_traces)
+    experience_latencies = [
+        int(t.get("experience_latency_ms") or 0)
+        for t in react_traces
+        if t.get("experience_memory_enabled")
+    ]
+    experience_hit_rate = (
+        round(experience_hit_count / len(react_traces), 4) if react_traces else 0.0
+    )
+    avg_experience_latency = (
+        int(sum(experience_latencies) / len(experience_latencies))
+        if experience_latencies else 0
+    )
+    skill_injected_count = sum(1 for t in react_traces if t.get("skill_injected"))
+
     # ---- 两条链路请求量与平均延迟对比 ----
     def _avg_latency(items: List[Dict[str, Any]]) -> int:
         values = [int(x.get("latency_ms") or 0) for x in items]
@@ -107,6 +124,17 @@ def build_agent_metrics(days: int = 14, recent_limit: int = 50) -> Dict[str, Any
             "avg_latency_react_ms": _avg_latency(react_traces),
             "avg_latency_single_rag_ms": _avg_latency(single_traces),
             "max_steps_count": step_dist["max_steps_reached"],
+            "experience_memory_hit_rate": experience_hit_rate,
+            "experience_memory_injected_count": experience_injected_count,
+            "avg_retrieval_latency_ms": avg_experience_latency,
+            "skill_injected_count": skill_injected_count,
+        },
+        "experience_memory": {
+            "enabled": any(t.get("experience_memory_enabled") for t in react_traces),
+            "hit_count": experience_hit_count,
+            "hit_rate": experience_hit_rate,
+            "injected_count": experience_injected_count,
+            "avg_retrieval_latency_ms": avg_experience_latency,
         },
         "step_distribution": step_distribution,
         "tool_stats": tools,

@@ -36,6 +36,18 @@ class AgentGraphState(TypedDict, total=False):
     error: str
     latency_ms: int
 
+    # 经验记忆 / 技能注入（能力 A / B）
+    experience_memory_enabled: bool
+    experience_hit: bool
+    experience_injected: int
+    experience_latency_ms: int
+    experience_ids: List[str]
+    skill_injection_enabled: bool
+    skill_injected: bool
+    skill_name: str
+    skill_block: str
+    experience_block: str
+
 
 def create_agent_default_state(**overrides) -> AgentGraphState:
     """创建 Agent 图默认状态"""
@@ -62,6 +74,17 @@ def create_agent_default_state(**overrides) -> AgentGraphState:
         "transfer_to_human": False,
         "error": "",
         "latency_ms": 0,
+        # 经验记忆 / 技能注入
+        "experience_memory_enabled": False,
+        "experience_hit": False,
+        "experience_injected": 0,
+        "experience_latency_ms": 0,
+        "experience_ids": [],
+        "skill_injection_enabled": False,
+        "skill_injected": False,
+        "skill_name": "",
+        "skill_block": "",
+        "experience_block": "",
     }
     state.update(overrides)
     return state

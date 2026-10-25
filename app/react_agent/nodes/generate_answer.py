@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 from app.core.logger import logger
 from app.react_agent.agent_sse import push_agent_event
+from app.react_agent.experience_memory import schedule_experience_write
 from app.react_agent.trace_store import save_agent_trace
 
 
@@ -34,6 +35,15 @@ def _build_trace(state) -> Dict[str, Any]:
         "latency_ms": latency_ms,
         "steps": steps,
         "error": state.get("error", "") or "",
+        # 经验记忆 / 技能注入元数据（供 /agent/metrics 聚合）
+        "experience_memory_enabled": bool(state.get("experience_memory_enabled")),
+        "experience_hit": bool(state.get("experience_hit")),
+        "experience_injected": int(state.get("experience_injected") or 0),
+        "experience_latency_ms": int(state.get("experience_latency_ms") or 0),
+        "experience_ids": state.get("experience_ids") or [],
+        "skill_injection_enabled": bool(state.get("skill_injection_enabled")),
+        "skill_injected": bool(state.get("skill_injected")),
+        "skill_name": state.get("skill_name", "") or "",
         # 明确标注：工具数据为模拟数据
         "mock_data": True,
         "mock_note": "check_device_status / check_user_permission / query_ticket_history 使用模拟数据，生产环境需替换为真实 CMDB/ITSM/IAM 接口。",
@@ -52,6 +62,12 @@ def node_generate_answer(state):
     trace = _build_trace(state)
     state["latency_ms"] = trace["latency_ms"]
     save_agent_trace(trace)
+
+    # 能力 A：会话结束后异步写入诊断经验（不阻塞 SSE）
+    try:
+        schedule_experience_write(trace)
+    except Exception as e:
+        logger.warning(f"[AgentAnswer] 经验写入调度失败（已忽略）：{e}")
 
     logger.info(f"[AgentAnswer] 完成：session_id={session_id}, route={trace['route']}, "
                 f"steps={trace['step_count']}, max_steps_reached={trace['max_steps_reached']}, "

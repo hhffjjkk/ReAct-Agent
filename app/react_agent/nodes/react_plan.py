@@ -11,8 +11,7 @@ from langchain_core.messages import HumanMessage
 from app.core.logger import logger
 from app.lm.lm_utils import get_llm_client
 from app.react_agent.agent_sse import push_agent_event
-from app.react_agent.prompt_loader import load_md_prompt
-from app.react_agent.tools import render_tools_for_prompt
+from app.react_agent.prompt_builder import build_react_prompt, prepare_injections
 
 _TRANSFER_KEYWORDS = ("转人工", "人工工单", "转交人工", "人工处理", "人工排查")
 
@@ -133,6 +132,17 @@ def _forced_final(state) -> Dict[str, Any]:
     }
 
 
+def _injection_payload(state) -> Dict[str, Any]:
+    """把注入元数据从 state 复制到节点返回值（LangGraph 状态合并用）"""
+    keys = (
+        "experience_memory_enabled", "experience_hit", "experience_injected",
+        "experience_latency_ms", "experience_ids",
+        "skill_injection_enabled", "skill_injected", "skill_name",
+        "skill_block", "experience_block",
+    )
+    return {k: state.get(k) for k in keys if k in state}
+
+
 def node_react_plan(state):
     """ReAct 规划：输出 thought/action/action_input 或 final_answer"""
     session_id = state["session_id"]
@@ -144,17 +154,23 @@ def node_react_plan(state):
         result = _forced_final(state)
         push_agent_event(session_id, "thought", {"step": step, "thought": result["thought"]})
         push_agent_event(session_id, "action", {"step": step, "action": "final", "action_input": {}})
-        return result
+        return {**result, **_injection_payload(state)}
 
-    prompt = load_md_prompt(
-        "react_system",
-        tools=render_tools_for_prompt(),
-        history=_history_text(session_id),
-        scratchpad=_scratchpad_text(state.get("scratchpad", [])),
+    # 仅在进入 ReAct 循环第一步前做一次经验 / 技能检索
+    if step == 0:
+        meta = prepare_injections(state.get("query", ""))
+        state.update(meta)
+
+    prompt = build_react_prompt(
+        question=state.get("query", ""),
+        history_text=_history_text(session_id),
+        scratchpad_text=_scratchpad_text(state.get("scratchpad", [])),
         step=step,
         max_steps=max_steps,
-        question=state.get("query", ""),
+        skill_block=state.get("skill_block", "") or "",
+        experience_block=state.get("experience_block", "") or "",
     )
+    injection_payload = _injection_payload(state)
 
     try:
         client = get_llm_client()
@@ -174,6 +190,7 @@ def node_react_plan(state):
                 "action_input": {},
                 "final_answer": final_answer,
                 "transfer_to_human": transfer,
+                **injection_payload,
             }
 
         if action == "__invalid__":
@@ -188,6 +205,7 @@ def node_react_plan(state):
                 "final_answer": answer,
                 "transfer_to_human": True,
                 "error": "invalid_llm_output",
+                **injection_payload,
             }
 
         push_agent_event(session_id, "thought", {"step": step, "thought": thought})
@@ -198,6 +216,7 @@ def node_react_plan(state):
             "thought": thought,
             "action": action,
             "action_input": action_input,
+            **injection_payload,
         }
 
     except Exception as e:
@@ -212,4 +231,5 @@ def node_react_plan(state):
             "final_answer": answer,
             "transfer_to_human": True,
             "error": f"llm_failed: {e}",
+            **injection_payload,
         }

@@ -107,6 +107,30 @@ powershell -ExecutionPolicy Bypass -File .\stop_all.ps1 -Infra    # 同时停容
 - **工具数量固定 4 个**：为满足任务约束刻意收窄，便于演示分支；扩展需评估 Prompt 与终止条件。
 - `search_knowledge_base` 依赖知识库是否有打印类文档，演示前可在导入页先上传相关手册。
 
+### 经验记忆与技能注入（能力 A / B，默认关闭）
+
+- **能力 A（在线经验记忆）**：ReAct 会话结束后，对 `max_steps_reached=false` 且 `retrieval_feedback` 存在正确反馈的轨迹，异步写入 Milvus 集合 `diagnosis_experience`；`react_plan` 第一步按 query embedding 检索 top-2（相似度 ≥ 0.75、超时 300ms 跳过），命中后以 `【参考经验】` 注入 Prompt。
+- **能力 B（离线技能沉淀）**：`app/tool/build_skills.py` 把最近 N 天成功轨迹按工具序列聚类，生成 `skills/*.md`；在线侧按关键词匹配并在 Prompt 中注入 `【可用技能】`（优先级高于参考经验，最多 1 个）。
+- 两个开关默认 `false`；关闭时基础 Prompt 与改造前逐字符一致，且不会触发任何经验/技能检索。
+
+```bash
+# 能力 A：开启后重启查询服务
+# .env: EXPERIENCE_MEMORY_ENABLED=true
+uv run python -m app.tool.build_skills            # 能力 B：dry-run，只打印
+uv run python -m app.tool.build_skills --write    # 能力 B：写入 skills/
+# .env: SKILL_INJECTION_ENABLED=true 后重启查询服务
+
+# 验证注入与指标
+curl -X POST http://127.0.0.1:8001/agent/query -H "Content-Type: application/json" \
+  -d "{\"query\":\"我打印不了，提示错误码 E3\"}"
+curl http://127.0.0.1:8001/agent/metrics
+```
+
+> 已知限制：
+> 1. 技能匹配目前是关键词包含匹配，可后续升级为 embedding 匹配；
+> 2. 经验写入依赖 `retrieval_feedback.session_id`，当前 Agent 会话没有独立反馈入口，需通过现有反馈机制补齐该字段后才能产出 `success=true` 经验；
+> 3. BGE-M3 在 CPU 上单条 query embedding 可能超过 300ms，按设计会超时跳过注入（不阻塞主流程）；线上如要求稳定命中，建议使用 GPU 或增加 embedding 预热/缓存。
+
 ---
 
 ## 🖼️ 界面预览
@@ -331,6 +355,13 @@ uv run python app/query_process/api/query_server.py
 | `AGENT_ENABLED` | `true` | 启用 `/agent/*` ReAct 诊断链路（false 时统一 404） |
 | `AGENT_MAX_STEPS` | `6` | ReAct 最大工具调用步数（硬上限） |
 | `AGENT_TOPK` | `5` | `search_knowledge_base` 默认返回切片数 |
+| `EXPERIENCE_MEMORY_ENABLED` | `false` | 启用在线经验记忆（能力 A） |
+| `EXPERIENCE_MEMORY_TOPK` | `2` | 经验检索 top-k |
+| `EXPERIENCE_MEMORY_THRESHOLD` | `0.75` | 经验相似度阈值 |
+| `EXPERIENCE_MEMORY_TIMEOUT_MS` | `300` | 经验检索超时（毫秒），超时跳过注入 |
+| `EXPERIENCE_MEMORY_COLLECTION` | `diagnosis_experience` | 经验 Milvus 集合名 |
+| `SKILL_INJECTION_ENABLED` | `false` | 启用在线技能注入（能力 B） |
+| `SKILL_DIR` | `./skills` | SKILL.md 目录 |
 
 ---
 
